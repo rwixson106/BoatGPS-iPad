@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Boat GPS Map — iPad Prototype</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+
+<link rel="stylesheet" href="leaflet.css">
+
+<style>
+
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+#map {
+    height: 100%;
+    width: 100%;
+}
+
+.info-box {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1000;
+
+    background: white;
+    padding: 10px 14px;
+
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+
+    border-radius: 5px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+}
+
+.follow-box {
+    position: absolute;
+    top: 10px;
+    left: 50px;
+    z-index: 1000;
+
+    background: white;
+    padding: 8px;
+
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+
+    border-radius: 5px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+}
+
+.follow-box button {
+    font-size: 14px;
+    padding: 7px 10px;
+    cursor: pointer;
+}
+
+
+.trip-box {
+    position: absolute;
+    top: 90px;
+    left: 10px;
+    z-index: 1000;
+
+    background: white;
+    padding: 8px;
+
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+
+    border-radius: 5px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+}
+
+.trip-box button {
+    font-size: 14px;
+    padding: 7px 10px;
+    cursor: pointer;
+}
+
+#tripStatus {
+    margin-top: 5px;
+    font-size: 12px;
+}
+
+</style>
+</head>
+
+
+<body>
+
+<div id="map"></div>
+
+
+<div id="info" class="info-box">
+    <strong>Boat GPS</strong><br>
+    Connecting to Feather...
+</div>
+
+
+<div class="follow-box">
+    <button id="followButton" onclick="toggleFollowGPS()">
+        Follow GPS: ON
+    </button>
+</div>
+
+
+<div class="trip-box">
+
+    <button onclick="loadRecordedTrip()">
+        Load Recorded Trip
+    </button>
+
+    <div id="tripStatus">
+        No recorded trip loaded
+    </div>
+
+</div>
+
+
+<style>
+#map-import {position:absolute;z-index:2000;bottom:16px;left:12px;background:#fff;padding:12px;border-radius:8px;box-shadow:0 1px 7px #555;font:13px Arial;max-width:290px}
+#map-import label {display:block;margin-bottom:6px;font-weight:bold}
+#map-import input {max-width:260px}
+#map-import button {margin-top:7px;padding:6px}
+#map-import-status {font-size:12px;margin-top:7px;max-width:270px}
+</style>
+<div id="map-import"><label>Offline map — iPad prototype</label><input type="file" id="pmtiles-file" accept=".pmtiles"><div id="map-import-status">Choose Chicago.pmtiles once to store it in Safari.</div><button id="map-clear" type="button">Remove saved map</button></div>
+<script src="offline-pmtiles.js"></script>
+
+<script src="leaflet.js"></script>
+<script src="protomaps-leaflet.js"></script>
+
+
+<script>
+window.boatMapInitialize = function () {
+
+/*
+============================================================
+SETTINGS
+============================================================
+*/
+
+const TRACK_DISTANCE_METERS = 5;
+
+const CONNECTION_TIMEOUT_MS = 3000;
+
+const FEATHER_ADDRESS =
+    'http://192.168.4.1';
+
+
+/*
+============================================================
+CREATE MAP
+============================================================
+*/
+
+const map = L.map('map', {
+
+    minZoom: 7,
+    maxZoom: 15
+
+}).setView(
+
+    [41.8075, -87.931],
+
+    15
+
+);
+
+
+/*
+============================================================
+OFFLINE PMTILES BASEMAP
+============================================================
+*/
+
+const basemap = protomapsL.leafletLayer({
+
+    url: 'Chicago.pmtiles',
+
+    flavor: 'light',
+
+    lang: 'en',
+
+    maxDataZoom: 15
+
+});
+
+basemap.addTo(map);
+
+
+/*
+============================================================
+INITIAL POSITION
+============================================================
+*/
+
+let latitude  = 41.80754;
+let longitude = -87.93141;
+
+
+/*
+============================================================
+BOAT MARKER
+============================================================
+*/
+
+const boatMarker = L.marker(
+
+    [latitude, longitude]
+
+).addTo(map);
+
+
+boatMarker.bindPopup(
+
+    "<b>Boat Position</b>"
+
+);
+
+
+/*
+============================================================
+LIVE TRACK
+
+These are positions received directly over Wi-Fi.
+============================================================
+*/
+
+let currentTrackPoints = [];
+
+let currentTrackLine = null;
+
+let lastTrackPosition = null;
+
+
+/*
+============================================================
+RECORDED TRACK
+
+Loaded later from the Feather LittleFS log.
+============================================================
+*/
+
+let recordedTrackLine = null;
+
+
+/*
+============================================================
+COMMUNICATION STATUS
+============================================================
+*/
+
+let lastSuccessfulGPS = 0;
+
+let connectionLost = true;
+
+
+/*
+============================================================
+FOLLOW GPS
+
+When ON, the map follows the live GPS position.
+Dragging the map manually turns following OFF.
+Use the button to turn following back ON.
+============================================================
+*/
+
+let followGPS = true;
+let programmaticMapMove = false;
+
+function updateFollowButton() {
+    const button = document.getElementById('followButton');
+    button.textContent = followGPS ? 'Follow GPS: ON' : 'Follow GPS: OFF';
+}
+
+function toggleFollowGPS() {
+    followGPS = !followGPS;
+    updateFollowButton();
+
+    if (followGPS) {
+        programmaticMapMove = true;
+        map.panTo([latitude, longitude]);
+    }
+}
+
+// A user drag means they want to inspect another part of the map.
+map.on('dragstart', function () {
+    if (!programmaticMapMove && followGPS) {
+        followGPS = false;
+        updateFollowButton();
+    }
+});
+
+map.on('moveend', function () {
+    programmaticMapMove = false;
+});
+
+
+/*
+============================================================
+START NEW LIVE TRACK SEGMENT
+============================================================
+*/
+
+function startNewTrack(position) {
+
+    currentTrackPoints = [position];
+
+
+    currentTrackLine = L.polyline(
+
+        currentTrackPoints,
+
+        {
+            color: 'blue',
+            weight: 4
+        }
+
+    ).addTo(map);
+
+
+    lastTrackPosition = position;
+
+}
+
+
+/*
+============================================================
+UPDATE LIVE TRACK
+============================================================
+*/
+
+function updateTrack(position) {
+
+
+    /*
+    Start a new segment following a communications outage.
+    */
+
+    if (
+        currentTrackLine === null ||
+        connectionLost
+    ) {
+
+        startNewTrack(position);
+
+        connectionLost = false;
+
+        return;
+
+    }
+
+
+    /*
+    Distance from last recorded display point.
+    */
+
+    const distance = map.distance(
+
+        lastTrackPosition,
+
+        position
+
+    );
+
+
+    /*
+    Ignore GPS wander smaller than 5 meters.
+    */
+
+    if (
+        distance >=
+        TRACK_DISTANCE_METERS
+    ) {
+
+        currentTrackPoints.push(
+
+            position
+
+        );
+
+
+        currentTrackLine.setLatLngs(
+
+            currentTrackPoints
+
+        );
+
+
+        lastTrackPosition = position;
+
+    }
+
+}
+
+
+/*
+============================================================
+DISPLAY LIVE GPS INFORMATION
+============================================================
+*/
+
+function displayGPS(gps) {
+
+
+    let courseDisplay;
+
+
+    if (
+        Number(gps.speed) >= 1.0
+    ) {
+
+        courseDisplay =
+
+            Number(
+                gps.course
+            ).toFixed(1) +
+
+            '&deg;';
+
+    }
+
+    else {
+
+        courseDisplay = '---';
+
+    }
+
+
+    document.getElementById(
+        'info'
+    ).innerHTML =
+
+        '<strong>LIVE BOAT GPS</strong><br>' +
+
+        'Fix: YES<br>' +
+
+        'Latitude: ' +
+
+        latitude.toFixed(6) +
+
+        '<br>' +
+
+        'Longitude: ' +
+
+        longitude.toFixed(6) +
+
+        '<br>' +
+
+        'Speed: ' +
+
+        Number(
+            gps.speed
+        ).toFixed(2) +
+
+        ' knots<br>' +
+
+        'Course: ' +
+
+        courseDisplay +
+
+        '<br>' +
+
+        'UTC: ' +
+
+        gps.utc;
+
+}
+
+
+/*
+============================================================
+GET LIVE GPS FROM FEATHER
+============================================================
+*/
+
+async function updateGPS() {
+
+    try {
+
+
+        const response = await fetch(
+
+            FEATHER_ADDRESS + '/gps',
+
+            {
+                cache: 'no-store'
+            }
+
+        );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+
+                'HTTP error ' +
+                response.status
+
+            );
+
+        }
+
+
+        const gps =
+            await response.json();
+
+
+        lastSuccessfulGPS =
+            Date.now();
+
+
+        /*
+        Valid GPS fix.
+        */
+
+        if (gps.fix) {
+
+
+            latitude =
+                Number(gps.lat);
+
+
+            longitude =
+                Number(gps.lon);
+
+
+            const newPosition = [
+
+                latitude,
+
+                longitude
+
+            ];
+
+
+            /*
+            Move marker every GPS update.
+            */
+
+            boatMarker.setLatLng(
+
+                newPosition
+
+            );
+
+
+            /*
+            Update filtered live track.
+            */
+
+            updateTrack(
+
+                newPosition
+
+            );
+
+
+            /*
+            Only pan if position has actually
+            moved outside visible map.
+            */
+
+            if (
+                followGPS &&
+                !map.getBounds().contains(
+                    newPosition
+                )
+            ) {
+
+                programmaticMapMove = true;
+
+                map.panTo(
+                    newPosition
+                );
+
+            }
+
+
+            displayGPS(gps);
+
+        }
+
+        else {
+
+
+            document.getElementById(
+                'info'
+            ).innerHTML =
+
+                '<strong>Boat GPS</strong><br>' +
+
+                'Feather connected<br>' +
+
+                'GPS Fix: NO<br>' +
+
+                'Waiting for satellites...';
+
+        }
+
+    }
+
+
+    catch (error) {
+
+        console.log(
+
+            'GPS communication interruption:',
+
+            error
+
+        );
+
+    }
+
+}
+
+
+/*
+============================================================
+CONNECTION MONITOR
+============================================================
+*/
+
+function checkConnection() {
+
+
+    if (
+        lastSuccessfulGPS === 0
+    ) {
+
+        return;
+
+    }
+
+
+    const elapsed =
+
+        Date.now() -
+
+        lastSuccessfulGPS;
+
+
+    if (
+        elapsed >
+        CONNECTION_TIMEOUT_MS
+    ) {
+
+
+        connectionLost = true;
+
+
+        document.getElementById(
+            'info'
+        ).innerHTML =
+
+            '<strong>Boat GPS</strong><br>' +
+
+            '<span style="color:red">' +
+
+            '<strong>CONNECTION LOST</strong>' +
+
+            '</span><br>' +
+
+            'Waiting for Feather...';
+
+    }
+
+}
+
+
+/*
+============================================================
+LOAD RECORDED TRIP FROM FEATHER
+
+LittleFS retains EVERY one-second GPS record.
+
+DISPLAY RULES:
+
+1. Apply 5-meter movement filter.
+2. Break the red track whenever consecutive stored
+   timestamps are more than 5 seconds apart.
+3. Show stored-point and displayed-point counts.
+
+CSV format:
+
+Date,UTC,Latitude,Longitude,Speed_knots,Course_deg
+============================================================
+*/
+
+async function loadRecordedTrip() {
+
+    const status =
+        document.getElementById('tripStatus');
+
+    status.innerHTML =
+        'Loading recorded trip...';
+
+
+    try {
+
+        const response = await fetch(
+
+            FEATHER_ADDRESS + '/log',
+
+            {
+                cache: 'no-store'
+            }
+
+        );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                'HTTP error ' +
+                response.status
+            );
+
+        }
+
+
+        const csv =
+            await response.text();
+
+
+        /*
+        --------------------------------------------------------
+        SPLIT CSV INTO LINES
+        --------------------------------------------------------
+        */
+
+        const lines =
+            csv
+            .trim()
+            .split(/\r?\n/);
+
+
+        if (lines.length < 2) {
+
+            status.innerHTML =
+                'Recorded trip is empty';
+
+            return;
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        READ ALL RAW GPS RECORDS
+
+        Nothing is removed from LittleFS.
+        --------------------------------------------------------
+        */
+
+        const rawRecords = [];
+
+
+        /*
+        Skip line 0 -- CSV header.
+        */
+
+        for (
+            let i = 1;
+            i < lines.length;
+            i++
+        ) {
+
+            const fields =
+                lines[i].split(',');
+
+
+            /*
+            Expected:
+
+            0 Date
+            1 UTC
+            2 Latitude
+            3 Longitude
+            4 Speed
+            5 Course
+            */
+
+            if (fields.length < 6) {
+
+                continue;
+
+            }
+
+
+            const date =
+                fields[0].trim();
+
+            const utc =
+                fields[1].trim();
+
+            const lat =
+                Number(fields[2]);
+
+            const lon =
+                Number(fields[3]);
+
+
+            if (
+                !Number.isFinite(lat) ||
+                !Number.isFinite(lon)
+            ) {
+
+                continue;
+
+            }
+
+
+            /*
+            Convert stored GPS date + UTC into a
+            JavaScript timestamp.
+
+            Example:
+
+            2026-09-25
+            12:34:56
+
+            becomes:
+
+            2026-09-25T12:34:56Z
+            */
+
+            const timestamp =
+                Date.parse(
+                    date +
+                    'T' +
+                    utc +
+                    'Z'
+                );
+
+
+            if (
+                !Number.isFinite(timestamp)
+            ) {
+
+                continue;
+
+            }
+
+
+            rawRecords.push({
+
+                lat: lat,
+                lon: lon,
+                timestamp: timestamp,
+                date: date,
+                utc: utc
+
+            });
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        MAKE SURE WE FOUND VALID DATA
+        --------------------------------------------------------
+        */
+
+        if (rawRecords.length === 0) {
+
+            status.innerHTML =
+                'No valid GPS positions found';
+
+            return;
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        REMOVE PREVIOUSLY DISPLAYED RECORDED TRACKS
+
+        recordedTrackLine is now a LayerGroup containing
+        all of the separate red segments.
+        --------------------------------------------------------
+        */
+
+        if (
+            recordedTrackLine !== null
+        ) {
+
+            map.removeLayer(
+                recordedTrackLine
+            );
+
+        }
+
+
+        /*
+        Create a Leaflet group to hold multiple
+        independent red track segments.
+        */
+
+        recordedTrackLine =
+            L.layerGroup().addTo(map);
+
+
+        /*
+        --------------------------------------------------------
+        FILTER AND SPLIT THE RECORDED TRACK
+        --------------------------------------------------------
+        */
+
+        const displayedSegments = [];
+
+        let currentSegment = [];
+
+        let displayedPointCount = 0;
+
+
+        /*
+        First stored point always starts the
+        first displayed segment.
+        */
+
+        let previousRawRecord =
+            rawRecords[0];
+
+        let lastDisplayedPosition = [
+
+            rawRecords[0].lat,
+            rawRecords[0].lon
+
+        ];
+
+
+        currentSegment.push(
+            lastDisplayedPosition
+        );
+
+        displayedPointCount++;
+
+
+        /*
+        Examine every subsequent raw record.
+        */
+
+        for (
+            let i = 1;
+            i < rawRecords.length;
+            i++
+        ) {
+
+            const record =
+                rawRecords[i];
+
+
+            /*
+            ----------------------------------------------------
+            TIME SINCE PREVIOUS RAW GPS RECORD
+
+            This deliberately compares consecutive RAW
+            records, not filtered display points.
+
+            Normal:
+                1 second
+
+            Track break:
+                > 5 seconds
+            ----------------------------------------------------
+            */
+
+            const timeGapSeconds =
+
+                (
+                    record.timestamp -
+                    previousRawRecord.timestamp
+                ) / 1000.0;
+
+
+            /*
+            ----------------------------------------------------
+            BREAK TRACK FOR TIME GAP
+
+            Also treat a backwards timestamp as a break.
+            ----------------------------------------------------
+            */
+
+            if (
+                timeGapSeconds > 5 ||
+                timeGapSeconds < 0
+            ) {
+
+
+                /*
+                Save completed segment.
+                */
+
+                if (
+                    currentSegment.length > 0
+                ) {
+
+                    displayedSegments.push(
+                        currentSegment
+                    );
+
+                }
+
+
+                /*
+                Start new segment at current position.
+
+                There will be NO red line connecting
+                the old segment to this one.
+                */
+
+                currentSegment = [
+
+                    [
+                        record.lat,
+                        record.lon
+                    ]
+
+                ];
+
+
+                lastDisplayedPosition = [
+
+                    record.lat,
+                    record.lon
+
+                ];
+
+
+                displayedPointCount++;
+
+
+                previousRawRecord =
+                    record;
+
+
+                continue;
+
+            }
+
+
+            /*
+            ----------------------------------------------------
+            5-METER MOVEMENT FILTER
+            ----------------------------------------------------
+            */
+
+            const candidate = [
+
+                record.lat,
+                record.lon
+
+            ];
+
+
+            const distance =
+                map.distance(
+
+                    lastDisplayedPosition,
+
+                    candidate
+
+                );
+
+
+            if (
+                distance >=
+                TRACK_DISTANCE_METERS
+            ) {
+
+                currentSegment.push(
+                    candidate
+                );
+
+
+                lastDisplayedPosition =
+                    candidate;
+
+
+                displayedPointCount++;
+
+            }
+
+
+            /*
+            Always advance previous RAW record,
+            even when the point wasn't displayed.
+            */
+
+            previousRawRecord =
+                record;
+
+        }
+
+
+        /*
+        Save final segment.
+        */
+
+        if (
+            currentSegment.length > 0
+        ) {
+
+            displayedSegments.push(
+                currentSegment
+            );
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        DRAW EACH RED SEGMENT SEPARATELY
+        --------------------------------------------------------
+        */
+
+        const allDisplayedPoints = [];
+
+
+        for (
+            const segment of displayedSegments
+        ) {
+
+
+            /*
+            A single point cannot produce a visible
+            polyline, but it still counts as a
+            displayed track point.
+            */
+
+            if (
+                segment.length >= 2
+            ) {
+
+                const line =
+                    L.polyline(
+
+                        segment,
+
+                        {
+                            color: 'red',
+                            weight: 3,
+                            opacity: 0.8
+                        }
+
+                    );
+
+
+                line.addTo(
+                    recordedTrackLine
+                );
+
+            }
+
+
+            for (
+                const point of segment
+            ) {
+
+                allDisplayedPoints.push(
+                    point
+                );
+
+            }
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        ZOOM TO RECORDED TRIP
+        --------------------------------------------------------
+        */
+
+        if (
+            allDisplayedPoints.length > 1
+        ) {
+
+            const bounds =
+                L.latLngBounds(
+                    allDisplayedPoints
+                );
+
+
+            map.fitBounds(
+
+                bounds,
+
+                {
+                    padding: [30, 30]
+                }
+
+            );
+
+        }
+
+        else if (
+            allDisplayedPoints.length === 1
+        ) {
+
+            map.setView(
+
+                allDisplayedPoints[0],
+
+                17
+
+            );
+
+        }
+
+
+        /*
+        --------------------------------------------------------
+        STATUS BOX
+        --------------------------------------------------------
+        */
+
+        status.innerHTML =
+
+            '<strong>' +
+
+            rawRecords.length +
+
+            '</strong> stored GPS points<br>' +
+
+            '<strong>' +
+
+            displayedPointCount +
+
+            '</strong> displayed track points';
+
+
+        /*
+        Helpful diagnostic information in
+        Chrome Developer Console.
+        */
+
+        console.log(
+
+            'Recorded trip:',
+
+            rawRecords.length,
+
+            'stored points,',
+
+            displayedPointCount,
+
+            'displayed points,',
+
+            displayedSegments.length,
+
+            'track segments'
+
+        );
+
+    }
+
+
+    catch (error) {
+
+        console.error(
+
+            'Unable to load recorded trip:',
+
+            error
+
+        );
+
+
+        status.innerHTML =
+
+            '<span style="color:red">' +
+
+            'Unable to load recorded trip' +
+
+            '</span>';
+
+    }
+
+}
+
+/*
+============================================================
+START LIVE GPS
+============================================================
+*/
+
+updateGPS();
+
+
+setInterval(
+
+    updateGPS,
+
+    1000
+
+);
+
+
+setInterval(
+
+    checkConnection,
+
+    500
+
+);
+
+
+
+};
+window.boatMapReady.then(() => { window.boatMapInitialize(); document.getElementById('map-import-status').textContent = 'Saved offline map active. GPS connection may be blocked on HTTPS.'; }).catch(e => { document.getElementById('map-import-status').textContent = 'Map error: '+e.message; });
+</script>
+
+</body>
+
+</html>
