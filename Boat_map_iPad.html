@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">le
+<html lang="en">
 
 <head>
 <meta charset="UTF-8">
@@ -133,11 +133,12 @@ html, body {
 #map-import button {margin-top:7px;padding:6px}
 #map-import-status {font-size:12px;margin-top:7px;max-width:270px}
 </style>
-<div id="map-import"><label>Offline map — iPad prototype</label><input type="file" id="pmtiles-file" accept=".pmtiles"><div id="map-import-status">Choose Chicago.pmtiles once to store it in Safari.</div><button id="map-clear" type="button">Remove saved map</button></div>
+<div id="map-import"><label>Offline map — iPad prototype</label><input type="file" id="pmtiles-file" accept=".pmtiles"><div id="map-import-status">Choose a .pmtiles map to store in this browser.</div><button id="map-clear" type="button">Remove saved map</button></div>
 <script src="offline-pmtiles.js"></script>
 
 <script src="leaflet/leaflet.js"></script>
 <script src="protomaps/protomaps-leaflet.js"></script>
+
 
 <script>
 window.boatMapInitialize = function () {
@@ -165,7 +166,7 @@ CREATE MAP
 const map = L.map('map', {
 
     minZoom: 7,
-    maxZoom: 15
+    maxZoom: 18
 
 }).setView(
 
@@ -190,7 +191,7 @@ const basemap = protomapsL.leafletLayer({
 
     lang: 'en',
 
-    maxDataZoom: 15
+    maxDataZoom: 18
 
 });
 
@@ -213,11 +214,13 @@ BOAT MARKER
 ============================================================
 */
 
-const boatMarker = L.marker(
-
-    [latitude, longitude]
-
-).addTo(map);
+const boatMarker = L.circleMarker([latitude, longitude], {
+    radius: 8,
+    color: '#ffffff',
+    weight: 3,
+    fillColor: '#1677ff',
+    fillOpacity: 1
+}).addTo(map);
 
 
 boatMarker.bindPopup(
@@ -246,7 +249,7 @@ let lastTrackPosition = null;
 ============================================================
 RECORDED TRACK
 
-Loaded later from the Feather LittleFS log.
+Loaded later from the Feather microSD log.
 ============================================================
 */
 
@@ -291,6 +294,9 @@ function toggleFollowGPS() {
         map.panTo([latitude, longitude]);
     }
 }
+
+// The HTML button uses an inline onclick handler, so expose the function.
+window.toggleFollowGPS = toggleFollowGPS;
 
 // A user drag means they want to inspect another part of the map.
 map.on('dragstart', function () {
@@ -682,7 +688,7 @@ function checkConnection() {
 ============================================================
 LOAD RECORDED TRIP FROM FEATHER
 
-LittleFS retains EVERY one-second GPS record.
+The Feather microSD retains EVERY one-second GPS record.
 
 DISPLAY RULES:
 
@@ -759,7 +765,7 @@ async function loadRecordedTrip() {
         --------------------------------------------------------
         READ ALL RAW GPS RECORDS
 
-        Nothing is removed from LittleFS.
+        Nothing is removed from the Feather microSD.
         --------------------------------------------------------
         */
 
@@ -1183,6 +1189,9 @@ async function loadRecordedTrip() {
         --------------------------------------------------------
         */
 
+        followGPS = false;
+        updateFollowButton();
+
         if (
             allDisplayedPoints.length > 1
         ) {
@@ -1290,6 +1299,18 @@ async function loadRecordedTrip() {
 
 }
 
+// Expose the recorded-trip button handler to the HTML onclick attribute.
+window.loadRecordedTrip = loadRecordedTrip;
+
+// A newly imported PMTiles file opens at its own geographic center.
+// On normal page loads, continue to open at the current GPS position.
+if (window.boatMapOpenImported && window.boatMapGeography) {
+    followGPS = false;
+    updateFollowButton();
+    const area = window.boatMapGeography;
+    map.setView([area.lat, area.lon], area.zoom);
+}
+
 /*
 ============================================================
 START LIVE GPS
@@ -1319,24 +1340,9 @@ setInterval(
 
 
 };
-window.boatMapReady.then(() => { window.boatMapInitialize(); document.getElementById('map-import-status').textContent = 'Saved offline map active. GPS connection may be blocked on HTTPS.'; }).catch(e => { document.getElementById('map-import-status').textContent = 'Map error: '+e.message; });
+window.boatMapReady.then(() => { window.boatMapInitialize(); document.getElementById('map-import-status').textContent = 'Offline map ready. GPS connected directly to Feather.'; }).catch(e => { document.getElementById('map-import-status').textContent = 'Map error: '+e.message; });
 </script>
 
-<script>
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", function () {
-    navigator.serviceWorker
-      .register("./service-worker.js")
-      .then(function () {
-        console.log("BoatGPS offline service worker registered");
-      })
-      .catch(function (error) {
-        console.error("Service worker registration failed:", error);
-      });
-  });
-}
-</script>
-    
 </body>
 
 </html>
